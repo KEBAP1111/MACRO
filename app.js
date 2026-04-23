@@ -12,15 +12,19 @@ const FRED = {
   dxy:    'DEXUSEU',   // USD/EUR as DXY proxy
 };
 
-// CORS proxies — tried in order. CNN & FRED block direct browser requests.
-// Multiple proxies for resilience; silently falls through on failure.
+// CORS proxies — tried in order. Multiple strategies for resilience.
+// Key: different proxies expect different URL formats, so we try several.
 const CORS_PROXIES = [
-  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-  (url) => `https://cors.eu.org/${url}`,
-  (url) => `https://proxy.cors.sh/${url}`,
-  (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
+  // allorigins /get returns {contents: "...json string..."} — most reliable
+  { wrap: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, unwrap: 'allorigins' },
+  // corsproxy.io with new url= parameter
+  { wrap: (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`, unwrap: 'direct' },
+  // codetabs
+  { wrap: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: 'direct' },
+  // corsfix
+  { wrap: (url) => `https://proxy.corsfix.com/?${url}`, unwrap: 'direct' },
+  // cors.lol
+  { wrap: (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`, unwrap: 'direct' },
 ];
 
 // CNN Fear & Greed data endpoint — the one powering their page.
@@ -142,20 +146,34 @@ async function fetchWithTimeout(url, ms = 8000) {
   } finally { clearTimeout(timer); }
 }
 
-async function fetchViaProxies(url) {
-  // Try direct first (works in some browsers / for CORS-enabled endpoints)
+async function fetchViaProxies(url, options = {}) {
+  const { textMode = false } = options;
+  // Try direct first (works for CORS-enabled endpoints like Stooq, Yahoo)
   try {
     const r = await fetchWithTimeout(url, 5000);
-    if (r.ok) return await r.json();
+    if (r.ok) return textMode ? await r.text() : await r.json();
   } catch (e) {}
-  // Try each proxy
-  for (const wrap of CORS_PROXIES) {
+  // Try each proxy with its specific unwrap logic
+  for (const { wrap, unwrap } of CORS_PROXIES) {
     try {
       const proxied = wrap(url);
-      const r = await fetchWithTimeout(proxied, 9000);
+      const r = await fetchWithTimeout(proxied, 12000);
       if (!r.ok) continue;
       const text = await r.text();
-      try { return JSON.parse(text); } catch { /* not JSON */ }
+      if (unwrap === 'allorigins') {
+        // allorigins /get returns {contents: "raw body", status: {...}}
+        try {
+          const envelope = JSON.parse(text);
+          if (envelope && envelope.contents) {
+            if (textMode) return envelope.contents;
+            try { return JSON.parse(envelope.contents); } catch {}
+          }
+        } catch {}
+      } else {
+        // direct: body is the raw response
+        if (textMode) return text;
+        try { return JSON.parse(text); } catch {}
+      }
     } catch (e) {}
   }
   throw new Error('All proxies failed');
@@ -163,36 +181,68 @@ async function fetchViaProxies(url) {
 
 /* ============ DATA FETCHERS ============ */
 
-// --- FRED ---
+// --- Stooq: CORS-friendly, no API key needed ---
+// Returns CSV: Date,Open,High,Low,Close,Volume
+// Symbols: ^vix (VIX), cl.f (WTI), ^dxy (DXY), eurusd (EUR/USD)
+async function fetchStooq(symbol, days = 260) {
+  const url = `https://stooq.com/q/d/l/?s=${symbol}&i=d`;
+  const text = await fetchViaProxies(url, { textMode: true });
+  if (!text || typeof text !== 'string') throw new Error('bad stooq text');
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error('stooq empty');
+  const header = lines[0].toLowerCase();
+  if (!header.includes('date') || !header.includes('close')) throw new Error('stooq bad header');
+  const cols = header.split(',');
+  const iDate = cols.indexOf('date');
+  const iClose = cols.indexOf('close');
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    const d = parts[iDate];
+    const c = parseFloat(parts[iClose]);
+    if (d && !isNaN(c)) rows.push({ date: d, value: c });
+  }
+  if (!rows.length) throw new Error('stooq no data');
+  // Stooq returns ascending order already; take last N
+  return rows.slice(-days);
+}
+
+// --- FRED (needs proxy) ---
 async function fetchFRED(seriesId, limit = 260) {
   const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=desc&limit=${limit}`;
   const data = await fetchViaProxies(url);
   if (!data || !data.observations) throw new Error('bad FRED payload');
-  // Filter out "." placeholders FRED uses for missing data
   const clean = data.observations
     .filter(o => o.value && o.value !== '.')
     .map(o => ({ date: o.date, value: parseFloat(o.value) }))
-    .reverse(); // ascending by date
+    .reverse();
   return clean;
 }
 
-// --- Finnhub WTI ---
+// Unified series fetcher — tries Stooq first, FRED as fallback
+async function fetchSeriesWithFallback(stooqSymbol, fredSeriesId, limit = 260) {
+  try {
+    const s = await fetchStooq(stooqSymbol, limit);
+    if (s && s.length > 1) return { source: 'stooq', data: s };
+  } catch (e) {}
+  const f = await fetchFRED(fredSeriesId, limit);
+  return { source: 'fred', data: f };
+}
+
+// --- WTI ---
 async function fetchWTI() {
-  // Use Finnhub commodity quote for WTI oil futures (CL=F via alt symbol)
-  // Try a quote endpoint first
-  const symbols = ['CL=F']; // fallback ladder
-  for (const sym of symbols) {
-    try {
-      const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`;
-      const r = await fetchWithTimeout(url, 7000);
-      if (!r.ok) continue;
-      const q = await r.json();
-      if (q && typeof q.c === 'number' && q.c > 0) {
-        return { current: q.c, previous: q.pc, raw: q };
-      }
-    } catch (e) {}
-  }
-  // Fallback: try FRED DCOILWTICO (WTI price)
+  // Try Stooq first — CORS-friendly, reliable
+  try {
+    const s = await fetchStooq('cl.f', 260);
+    if (s && s.length >= 2) {
+      return {
+        current: s[s.length - 1].value,
+        previous: s[s.length - 2].value,
+        series: s,
+      };
+    }
+  } catch (e) {}
+  // Fallback to FRED
   const f = await fetchFRED('DCOILWTICO', 260);
   if (f.length >= 2) {
     return {
@@ -205,9 +255,11 @@ async function fetchWTI() {
 }
 
 async function fetchWTIHistory() {
-  // Prefer FRED for consistent daily series
-  const f = await fetchFRED('DCOILWTICO', 260);
-  return f;
+  try {
+    const s = await fetchStooq('cl.f', 260);
+    if (s && s.length) return s;
+  } catch (e) {}
+  return await fetchFRED('DCOILWTICO', 260);
 }
 
 // --- CNN Fear & Greed ---
@@ -302,7 +354,16 @@ function renderAll() {
   renderMetric('vix', 2, 0, 40, true);
   renderMetric('unrate', 1, 0, 10, true);
   renderMetric('wti', 2, 0, 150, false);
-  renderMetric('dxy', 4, 0.80, 1.30, false);
+  // DXY: Stooq gives actual DXY (~95-110), FRED fallback gives USD/EUR (~0.8-1.3)
+  // Detect which and render accordingly
+  const dxyVal = state.dxy.value;
+  if (dxyVal != null && dxyVal > 5) {
+    // Real DXY index
+    renderMetric('dxy', 2, 90, 120, false);
+  } else {
+    // USD/EUR rate
+    renderMetric('dxy', 4, 0.80, 1.30, false);
+  }
 
   // Last updated
   if (state.lastRefresh) {
@@ -391,7 +452,10 @@ function updateChartBadges() {
   if (state.vix.value != null) document.getElementById('vixBadge').textContent = fmtNum(state.vix.value, 2);
   if (state.unrate.value != null) document.getElementById('unrateBadge').textContent = fmtNum(state.unrate.value, 1) + '%';
   if (state.wti.value != null) document.getElementById('wtiBadge').textContent = '$' + fmtNum(state.wti.value, 2);
-  if (state.dxy.value != null) document.getElementById('dxyBadge').textContent = fmtNum(state.dxy.value, 4);
+  if (state.dxy.value != null) {
+    const dec = state.dxy.value > 5 ? 2 : 4;
+    document.getElementById('dxyBadge').textContent = fmtNum(state.dxy.value, dec);
+  }
 }
 
 function destroyChart(id) {
@@ -485,7 +549,10 @@ async function renderAllCharts() {
   renderChart('vix', state.vix.series, colors.accent, { badgeId: 'vixBadge' });
   renderChart('unrate', state.unrate.series, colors.ink, { badgeId: 'unrateBadge', badgeFmt: (v) => fmtNum(v, 1) + '%' });
   renderChart('wti', state.wti.series, '#c87a2a', { badgeId: 'wtiBadge', badgeFmt: (v) => '$' + fmtNum(v, 2) });
-  renderChart('dxy', state.dxy.series, '#3e7a8c', { badgeId: 'dxyBadge', badgeFmt: (v) => fmtNum(v, 4) });
+  renderChart('dxy', state.dxy.series, '#3e7a8c', {
+    badgeId: 'dxyBadge',
+    badgeFmt: (v) => fmtNum(v, v > 5 ? 2 : 4),
+  });
 }
 
 /* ============ REFRESH ============ */
@@ -505,7 +572,8 @@ async function refreshAll(isInitial = false) {
       state.fng.updated = Date.now();
     }),
     job('vix', async () => {
-      const s = await fetchFRED(FRED.vix, 260);
+      // Stooq: ^vix → fallback FRED: VIXCLS
+      const { data: s } = await fetchSeriesWithFallback('^vix', FRED.vix, 260);
       if (!s.length) throw new Error('empty vix');
       state.vix.series = s;
       state.vix.value = s[s.length - 1].value;
@@ -513,6 +581,7 @@ async function refreshAll(isInitial = false) {
       state.vix.updated = Date.now();
     }),
     job('unrate', async () => {
+      // Unemployment only on FRED (monthly macro data, no Stooq equivalent)
       const s = await fetchFRED(FRED.unrate, 65);
       if (!s.length) throw new Error('empty unrate');
       state.unrate.series = s;
@@ -524,23 +593,29 @@ async function refreshAll(isInitial = false) {
       const r = await fetchWTI();
       state.wti.value = r.current;
       state.wti.prev = r.previous;
-      // Also fetch history for chart
-      try {
-        const h = await fetchWTIHistory();
-        if (h && h.length) {
-          // Weekly sampling for chart clarity
-          const weekly = h.filter((_, i) => i % 5 === 0);
-          state.wti.series = weekly.length ? weekly : h;
-        }
-      } catch (e) {}
+      if (r.series && r.series.length) {
+        // Weekly sampling for chart clarity
+        const weekly = r.series.filter((_, i) => i % 5 === 0);
+        state.wti.series = weekly.length ? weekly : r.series;
+      } else {
+        try {
+          const h = await fetchWTIHistory();
+          if (h && h.length) {
+            const weekly = h.filter((_, i) => i % 5 === 0);
+            state.wti.series = weekly.length ? weekly : h;
+          }
+        } catch (e) {}
+      }
       state.wti.updated = Date.now();
     }),
     job('dxy', async () => {
-      const s = await fetchFRED(FRED.dxy, 260);
+      // Stooq: ^dxy (DXY index directly!) → fallback FRED: DEXUSEU (USD/EUR)
+      const { data: s, source } = await fetchSeriesWithFallback('^dxy', FRED.dxy, 260);
       if (!s.length) throw new Error('empty dxy');
       state.dxy.series = s;
       state.dxy.value = s[s.length - 1].value;
       state.dxy.prev = s.length > 1 ? s[s.length - 2].value : null;
+      state.dxy.source = source;
       state.dxy.updated = Date.now();
     }),
   ];

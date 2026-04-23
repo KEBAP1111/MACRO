@@ -598,15 +598,16 @@ async function refreshAll(isInitial = false) {
         state.unrate.prev = s.length > 1 ? s[s.length - 2].value : null;
         state.unrate.updated = Date.now();
       } catch (e) {
-        // Hardcoded recent US unemployment — updates monthly by BLS
-        // Manually update this line when needed
+        // Hardcoded recent US unemployment rate (BLS monthly release)
+        // Source: https://www.bls.gov/news.release/empsit.nr0.htm
+        // Update this list when new BLS data releases (first Friday of each month)
         const hardcoded = [
-          { date: '2025-10-01', value: 4.1 },
-          { date: '2025-11-01', value: 4.1 },
-          { date: '2025-12-01', value: 4.1 },
-          { date: '2026-01-01', value: 4.0 },
-          { date: '2026-02-01', value: 4.1 },
-          { date: '2026-03-01', value: 4.1 },
+          { date: '2025-10-01', value: 4.2 },
+          { date: '2025-11-01', value: 4.5 },
+          { date: '2025-12-01', value: 4.4 },
+          { date: '2026-01-01', value: 4.3 },
+          { date: '2026-02-01', value: 4.4 },
+          { date: '2026-03-01', value: 4.3 },
         ];
         state.unrate.series = hardcoded;
         state.unrate.value = hardcoded[hardcoded.length - 1].value;

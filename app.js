@@ -12,19 +12,15 @@ const FRED = {
   dxy:    'DEXUSEU',   // USD/EUR as DXY proxy
 };
 
-// CORS proxies — tried in order. Multiple strategies for resilience.
-// Key: different proxies expect different URL formats, so we try several.
+// CORS proxies — tried in order. Personal Cloudflare Worker is primary (100% reliable).
+// Public proxies kept as fallback in case the Worker is temporarily unavailable.
 const CORS_PROXIES = [
-  // allorigins /get returns {contents: "...json string..."} — most reliable
+  // Personal Cloudflare Worker — fast, reliable, unlimited for personal use
+  { wrap: (url) => `https://late-morning-be0b.sjk3018.workers.dev/?url=${encodeURIComponent(url)}`, unwrap: 'direct' },
+  // Public proxy fallbacks
   { wrap: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, unwrap: 'allorigins' },
-  // corsproxy.io with new url= parameter
   { wrap: (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`, unwrap: 'direct' },
-  // codetabs
   { wrap: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: 'direct' },
-  // corsfix
-  { wrap: (url) => `https://proxy.corsfix.com/?${url}`, unwrap: 'direct' },
-  // cors.lol
-  { wrap: (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`, unwrap: 'direct' },
 ];
 
 // CNN Fear & Greed data endpoint — the one powering their page.

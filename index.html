@@ -183,8 +183,53 @@
 
   </div>
 
+  <!-- S&P 500 vs MA200 — special trend card -->
+  <article class="card card-spx" data-metric="spx" id="spxCard">
+    <div class="card-head">
+      <div>
+        <div class="card-label">S&amp;P 500 vs MA200</div>
+        <div class="card-sub">200일선 추세 · 이격도</div>
+      </div>
+      <div class="status-dot" id="status-spx"></div>
+    </div>
+    <div class="spx-body">
+      <div class="spx-main">
+        <div class="spx-deviation" id="spxDeviation">—</div>
+        <div class="spx-status" id="spxStatus">—</div>
+      </div>
+      <div class="spx-stats">
+        <div class="spx-stat">
+          <span class="spx-stat-label">현재 지수</span>
+          <span class="spx-stat-value" id="spxValue">—</span>
+        </div>
+        <div class="spx-stat">
+          <span class="spx-stat-label">200일 이동평균</span>
+          <span class="spx-stat-value" id="spxMa200">—</span>
+        </div>
+        <div class="spx-stat">
+          <span class="spx-stat-label">전일 대비</span>
+          <span class="spx-stat-value" id="spxChange">—</span>
+        </div>
+      </div>
+    </div>
+    <!-- Visual position bar showing where price sits relative to MA200 -->
+    <div class="spx-position">
+      <div class="spx-position-track">
+        <div class="spx-position-zone-down"></div>
+        <div class="spx-position-zone-up"></div>
+        <div class="spx-position-ma" title="MA200"></div>
+        <div class="spx-position-marker" id="spxPositionMarker" title="현재 지수"></div>
+      </div>
+      <div class="spx-position-labels">
+        <span>−10%</span>
+        <span>MA200</span>
+        <span>+10%</span>
+      </div>
+    </div>
+  </article>
+
   <div class="foot-note">
-    데이터: FRED · Finnhub · CNN Markets. 시장이 열리지 않은 시간에는 마지막 거래일 값이 표시됩니다.
+    데이터: Yahoo Finance · FRED · CNN Markets. 시장이 열리지 않은 시간에는 마지막 거래일 값이 표시됩니다.
   </div>
 
 </section>
@@ -245,6 +290,17 @@
       <div class="chart-badge" id="dxyBadge">—</div>
     </header>
     <div class="chart-wrap"><canvas id="chart-dxy"></canvas></div>
+  </article>
+
+  <article class="chart-card">
+    <header class="chart-head">
+      <div>
+        <div class="chart-label">S&amp;P 500 vs 200일 이동평균</div>
+        <div class="chart-sub">최근 1년 · MA200 돌파 시점 강조</div>
+      </div>
+      <div class="chart-badge" id="spxBadge">—</div>
+    </header>
+    <div class="chart-wrap chart-wrap-tall"><canvas id="chart-spx"></canvas></div>
   </article>
 
 </section>

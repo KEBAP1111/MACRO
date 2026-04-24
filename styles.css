@@ -483,6 +483,190 @@ main {
   position: relative;
   height: 200px;
 }
+.chart-wrap-tall {
+  position: relative;
+  height: 260px;
+}
+
+/* ============ S&P 500 vs MA200 SPECIAL CARD ============ */
+.card-spx {
+  margin-top: 14px;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color .4s ease, box-shadow .4s ease, background .4s ease;
+}
+
+/* Trend zone color states — applied via JS data-zone attribute */
+.card-spx[data-zone="strong"] {
+  /* +5% 이상: 강한 상승 */
+  border-color: color-mix(in srgb, var(--up) 30%, var(--line));
+}
+.card-spx[data-zone="strong"] .spx-deviation { color: var(--up); }
+
+.card-spx[data-zone="normal"] {
+  /* +2~+5%: 정상 */
+}
+.card-spx[data-zone="normal"] .spx-deviation { color: var(--up); }
+
+.card-spx[data-zone="watch"] {
+  /* 0~+2%: 주의 */
+  border-color: #d4a544;
+  background: linear-gradient(135deg, var(--surface) 0%, color-mix(in srgb, #d4a544 8%, var(--surface)) 100%);
+}
+.card-spx[data-zone="watch"] .spx-deviation { color: #b88a2e; }
+
+.card-spx[data-zone="warning"] {
+  /* -2~0%: 경고 */
+  border-color: #d97a3c;
+  border-width: 2px;
+  background: linear-gradient(135deg, var(--surface) 0%, color-mix(in srgb, #d97a3c 12%, var(--surface)) 100%);
+  box-shadow: 0 0 0 4px color-mix(in srgb, #d97a3c 10%, transparent), var(--shadow);
+  animation: pulseWarning 2.5s ease-in-out infinite;
+}
+.card-spx[data-zone="warning"] .spx-deviation { color: #c45a1c; }
+
+.card-spx[data-zone="danger"] {
+  /* -2% 이하: 위험 */
+  border-color: var(--down);
+  border-width: 2px;
+  background: linear-gradient(135deg, var(--surface) 0%, color-mix(in srgb, var(--down) 14%, var(--surface)) 100%);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--down) 14%, transparent), var(--shadow);
+  animation: pulseDanger 1.8s ease-in-out infinite;
+}
+.card-spx[data-zone="danger"] .spx-deviation { color: var(--down); }
+
+@keyframes pulseWarning {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, #d97a3c 10%, transparent), var(--shadow); }
+  50%      { box-shadow: 0 0 0 8px color-mix(in srgb, #d97a3c 18%, transparent), var(--shadow); }
+}
+@keyframes pulseDanger {
+  0%, 100% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--down) 14%, transparent), var(--shadow); }
+  50%      { box-shadow: 0 0 0 11px color-mix(in srgb, var(--down) 25%, transparent), var(--shadow-hover); }
+}
+
+.spx-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: center;
+  margin: 6px 0 18px;
+}
+@media (max-width: 420px) {
+  .spx-body { grid-template-columns: 1fr; gap: 14px; }
+}
+
+.spx-main { text-align: left; }
+.spx-deviation {
+  font-family: 'Fraunces', serif;
+  font-weight: 900;
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  transition: color .4s ease;
+}
+@media (max-width: 420px) { .spx-deviation { font-size: 48px; } }
+
+.spx-status {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin-top: 4px;
+  letter-spacing: -0.01em;
+}
+
+.spx-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spx-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: 7px;
+}
+.spx-stat-label {
+  color: var(--ink-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.spx-stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+/* Position bar — visual where price sits relative to MA200 */
+.spx-position { margin-top: 4px; }
+.spx-position-track {
+  position: relative;
+  height: 14px;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  background: var(--track);
+}
+.spx-position-zone-down {
+  flex: 1;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--down) 35%, transparent),
+    color-mix(in srgb, var(--down) 12%, transparent));
+}
+.spx-position-zone-up {
+  flex: 1;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--up) 12%, transparent),
+    color-mix(in srgb, var(--up) 35%, transparent));
+}
+.spx-position-ma {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--ink);
+  transform: translateX(-50%);
+}
+.spx-position-ma::after {
+  content: "MA";
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  padding: 0 2px;
+}
+.spx-position-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 4px;
+  background: var(--ink);
+  border-radius: 2px;
+  transform: translateX(-50%);
+  transition: left 1.2s cubic-bezier(.4,0,.2,1);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink);
+}
+.spx-position-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-3);
+}
 
 /* ============ TOAST ============ */
 .toast {

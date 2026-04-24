@@ -34,7 +34,14 @@ window.charts = charts;
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const s = JSON.parse(raw);
+      // Migration: ensure spx exists for users with older saved state
+      if (!s.spx) {
+        s.spx = { value: null, prev: null, ma200: null, deviation: null, series: [], ma200Series: [], updated: null };
+      }
+      return s;
+    }
   } catch (e) {}
   return {
     fng:    { value: null, prev: null, week: null, rating: null, series: [], updated: null },
@@ -42,6 +49,7 @@ function loadState() {
     unrate: { value: null, prev: null, series: [], updated: null },
     wti:    { value: null, prev: null, series: [], updated: null },
     dxy:    { value: null, prev: null, series: [], updated: null },
+    spx:    { value: null, prev: null, ma200: null, deviation: null, series: [], ma200Series: [], updated: null },
     lastRefresh: null,
   };
 }
@@ -352,6 +360,83 @@ function renderMetric(id, valueDec, barMin, barMax, badIfUp = false, unitSuffix 
   }
 }
 
+// Calculate simple moving average (SMA) — returns array of {date, value} aligned with input
+function calcSMA(series, period) {
+  const out = [];
+  for (let i = 0; i < series.length; i++) {
+    if (i < period - 1) {
+      out.push({ date: series[i].date, value: null });
+    } else {
+      let sum = 0;
+      for (let j = i - period + 1; j <= i; j++) sum += series[j].value;
+      out.push({ date: series[i].date, value: sum / period });
+    }
+  }
+  return out;
+}
+
+// Determine zone based on deviation %
+// >= +5%: strong, +2~+5%: normal, 0~+2%: watch, -2~0%: warning, < -2%: danger
+function spxZone(deviationPct) {
+  if (deviationPct == null || isNaN(deviationPct)) return 'normal';
+  if (deviationPct >= 5)  return 'strong';
+  if (deviationPct >= 2)  return 'normal';
+  if (deviationPct >= 0)  return 'watch';
+  if (deviationPct >= -2) return 'warning';
+  return 'danger';
+}
+function spxZoneLabel(zone) {
+  return ({
+    strong:  '강한 상승 추세',
+    normal:  '안정 추세',
+    watch:   '주의 — 200일선 근접',
+    warning: '경고 — 200일선 하향',
+    danger:  '위험 — 추세 전환 신호',
+  })[zone] || '—';
+}
+
+function renderSPX() {
+  const s = state.spx;
+  const card = document.getElementById('spxCard');
+  const v = s.value;
+  const ma = s.ma200;
+  const dev = s.deviation;
+
+  document.getElementById('spxValue').textContent  = v  != null ? fmtNum(v, 2) : '—';
+  document.getElementById('spxMa200').textContent  = ma != null ? fmtNum(ma, 2) : '—';
+  document.getElementById('spxDeviation').textContent = dev != null
+    ? `${dev > 0 ? '+' : ''}${dev.toFixed(2)}%`
+    : '—';
+
+  // Daily change
+  const changeEl = document.getElementById('spxChange');
+  if (v != null && s.prev != null) {
+    const diff = v - s.prev;
+    const pct = (diff / s.prev) * 100;
+    const sign = diff >= 0 ? '+' : '';
+    changeEl.textContent = `${sign}${pct.toFixed(2)}%`;
+    changeEl.style.color = diff >= 0 ? 'var(--up)' : 'var(--down)';
+  } else {
+    changeEl.textContent = '—';
+    changeEl.style.color = '';
+  }
+
+  // Zone (color state)
+  const zone = spxZone(dev);
+  card.setAttribute('data-zone', zone);
+  document.getElementById('spxStatus').textContent = spxZoneLabel(zone);
+
+  // Position marker: clamp deviation to ±10% range, map to 0-100%
+  const marker = document.getElementById('spxPositionMarker');
+  if (dev != null) {
+    const clamped = Math.max(-10, Math.min(10, dev));
+    const leftPct = ((clamped + 10) / 20) * 100;
+    marker.style.left = leftPct + '%';
+  } else {
+    marker.style.left = '50%';
+  }
+}
+
 function renderAll() {
   renderFNG();
   renderMetric('vix', 2, 0, 40, true);
@@ -367,6 +452,7 @@ function renderAll() {
     // USD/EUR rate
     renderMetric('dxy', 4, 0.80, 1.30, false);
   }
+  renderSPX();
 
   // Last updated
   if (state.lastRefresh) {
@@ -458,6 +544,11 @@ function updateChartBadges() {
   if (state.dxy.value != null) {
     const dec = state.dxy.value > 5 ? 2 : 4;
     document.getElementById('dxyBadge').textContent = fmtNum(state.dxy.value, dec);
+  }
+  if (state.spx.deviation != null) {
+    const dev = state.spx.deviation;
+    const sign = dev >= 0 ? '+' : '';
+    document.getElementById('spxBadge').textContent = `MA200 ${sign}${dev.toFixed(2)}%`;
   }
 }
 
@@ -556,6 +647,164 @@ async function renderAllCharts() {
     badgeId: 'dxyBadge',
     badgeFmt: (v) => fmtNum(v, v > 5 ? 2 : 4),
   });
+
+  // S&P 500 + MA200 dual-line chart with breach highlighting
+  renderSPXChart(colors);
+}
+
+function renderSPXChart(colors) {
+  destroyChart('spx');
+  const el = document.getElementById('chart-spx');
+  if (!el) return;
+  const series = state.spx.series;
+  const ma200 = state.spx.ma200Series;
+  if (!series || !series.length) return;
+
+  // Plugin to fill area between price line and MA200 line:
+  // - green tint when price > MA200
+  // - red tint when price < MA200
+  const breachFillPlugin = {
+    id: 'breachFill',
+    beforeDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const priceData = chart.data.datasets[0].data;
+      const maData = chart.data.datasets[1].data;
+      const xScale = scales.x;
+      const yScale = scales.y;
+      ctx.save();
+      // Build segments and fill
+      for (let i = 1; i < priceData.length; i++) {
+        const p0 = priceData[i - 1], p1 = priceData[i];
+        const m0 = maData[i - 1], m1 = maData[i];
+        if (p0 == null || p1 == null || m0 == null || m1 == null) continue;
+        const x0 = xScale.getPixelForValue(i - 1);
+        const x1 = xScale.getPixelForValue(i);
+        const yp0 = yScale.getPixelForValue(p0);
+        const yp1 = yScale.getPixelForValue(p1);
+        const ym0 = yScale.getPixelForValue(m0);
+        const ym1 = yScale.getPixelForValue(m1);
+        const aboveStart = p0 >= m0;
+        const aboveEnd = p1 >= m1;
+        // Choose color based on average position
+        const above = (aboveStart && aboveEnd) || (aboveStart && !aboveEnd) || (!aboveStart && aboveEnd);
+        const fillUp = (aboveStart && aboveEnd);
+        const fillDown = (!aboveStart && !aboveEnd);
+        if (fillUp) {
+          ctx.fillStyle = 'rgba(95, 184, 131, 0.18)';
+        } else if (fillDown) {
+          ctx.fillStyle = 'rgba(229, 115, 115, 0.28)';
+        } else {
+          // Crossover segment — neutral
+          ctx.fillStyle = 'rgba(150, 150, 150, 0.10)';
+        }
+        ctx.beginPath();
+        ctx.moveTo(x0, yp0);
+        ctx.lineTo(x1, yp1);
+        ctx.lineTo(x1, ym1);
+        ctx.lineTo(x0, ym0);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    },
+  };
+
+  charts.spx = new Chart(el, {
+    type: 'line',
+    data: {
+      labels: series.map(p => p.date),
+      datasets: [
+        {
+          label: 'S&P 500',
+          data: series.map(p => p.value),
+          borderColor: colors.ink,
+          borderWidth: 1.8,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          pointHoverBackgroundColor: colors.ink,
+          pointHoverBorderColor: '#fff',
+          pointHoverBorderWidth: 2,
+          tension: 0.15,
+          fill: false,
+          order: 1,
+        },
+        {
+          label: 'MA200',
+          data: ma200.map(p => p.value),
+          borderColor: '#c87a2a',
+          borderWidth: 1.5,
+          borderDash: [4, 3],
+          pointRadius: 0,
+          pointHoverRadius: 0,
+          tension: 0,
+          fill: false,
+          order: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'end',
+          labels: {
+            color: colors.ink3,
+            font: { family: 'Inter Tight', size: 11, weight: '500' },
+            boxWidth: 12,
+            boxHeight: 2,
+            padding: 12,
+            usePointStyle: false,
+          },
+        },
+        tooltip: {
+          backgroundColor: colors.ink,
+          titleColor: '#fff', bodyColor: '#fff',
+          padding: 10, cornerRadius: 8,
+          titleFont: { family: 'JetBrains Mono', size: 11 },
+          bodyFont: { family: 'Inter Tight', size: 12, weight: '600' },
+          displayColors: true,
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${fmtNum(ctx.parsed.y, 2)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            color: colors.ink3,
+            font: { family: 'JetBrains Mono', size: 10 },
+            maxRotation: 0, autoSkip: true, maxTicksLimit: 5,
+          },
+          border: { display: false },
+        },
+        y: {
+          grid: { color: colors.line },
+          ticks: {
+            color: colors.ink3,
+            font: { family: 'JetBrains Mono', size: 10 },
+            maxTicksLimit: 6, padding: 6,
+          },
+          border: { display: false },
+        },
+      },
+    },
+    plugins: [breachFillPlugin],
+  });
+
+  // Badge: deviation %
+  const badge = document.getElementById('spxBadge');
+  if (badge && state.spx.deviation != null) {
+    const dev = state.spx.deviation;
+    const sign = dev >= 0 ? '+' : '';
+    badge.textContent = `MA200 ${sign}${dev.toFixed(2)}%`;
+    badge.style.color = dev >= 0 ? 'var(--up)' : 'var(--down)';
+  }
 }
 
 /* ============ REFRESH ============ */
@@ -632,6 +881,53 @@ async function refreshAll(isInitial = false) {
       state.dxy.prev = s.length > 1 ? s[s.length - 2].value : null;
       state.dxy.source = source;
       state.dxy.updated = Date.now();
+    }),
+    job('spx', async () => {
+      // S&P 500 — Yahoo: ^GSPC. Need ~250 trading days (≈ 1 year) to compute MA200 well.
+      // Fetch 18 months to ensure first MA200 value is at least ~6 months old.
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=18mo&interval=1d`;
+      let data;
+      try {
+        const r = await fetchWithTimeout(url, 8000);
+        if (r.ok) data = await r.json();
+      } catch (e) {}
+      if (!data) data = await fetchViaProxies(url);
+      if (!data || !data.chart || !data.chart.result || !data.chart.result[0]) throw new Error('bad spx payload');
+      const result = data.chart.result[0];
+      const timestamps = result.timestamp || [];
+      const closes = (result.indicators?.quote?.[0]?.close) || [];
+      const series = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        const c = closes[i];
+        if (c != null && !isNaN(c)) {
+          series.push({
+            date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
+            value: +c.toFixed(2),
+          });
+        }
+      }
+      if (series.length < 200) throw new Error('spx insufficient data for MA200');
+
+      // Compute MA200
+      const maFull = calcSMA(series, 200);
+
+      // Trim to last ~1 year for chart clarity (keep last 252 trading days)
+      const trimFrom = Math.max(0, series.length - 252);
+      const seriesTrim = series.slice(trimFrom);
+      const maTrim = maFull.slice(trimFrom);
+
+      const lastValue = series[series.length - 1].value;
+      const prevValue = series.length > 1 ? series[series.length - 2].value : null;
+      const lastMA = maFull[maFull.length - 1].value;
+      const deviation = lastMA != null ? ((lastValue - lastMA) / lastMA) * 100 : null;
+
+      state.spx.series = seriesTrim;
+      state.spx.ma200Series = maTrim;
+      state.spx.value = lastValue;
+      state.spx.prev = prevValue;
+      state.spx.ma200 = lastMA != null ? +lastMA.toFixed(2) : null;
+      state.spx.deviation = deviation != null ? +deviation.toFixed(2) : null;
+      state.spx.updated = Date.now();
     }),
   ];
 
